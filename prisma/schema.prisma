@@ -1,0 +1,221 @@
+// Prialto Finance App — data model
+// Postgres everywhere (local dev included, via `docker compose up db` — see
+// README). Note: Prisma's `provider` field must be a static string, not
+// env()-driven, so we standardize on Postgres rather than branching to SQLite
+// for local dev — that also avoids SQLite's lack of native enum support.
+// Design notes:
+//  - "Client" + "Unit" model the Prialto Unit billing structure (55 hrs/mo per unit).
+//  - Revenue rows are synced from QuickBooks (Invoice/Payment) and reconciled against
+//    Salesforce Opportunities (bookings) for the revenue & unit-economics dashboards.
+//  - TimeEntry / UtilizationSnapshot are synced from Time Doctor and are the source of
+//    truth for hours delivered vs. hours billed (utilization dashboards).
+//  - FinancialStatementLine stores normalized P&L / Balance Sheet / Cash Flow rows pulled
+//    from QuickBooks reports, so the core-financials dashboard doesn't need to hit the
+//    QBO Reports API live on every page load.
+//  - SyncRun / SyncLog give visibility into integration health (last sync time, errors)
+//    — surfaced in the app's own "Data Health" admin page.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Auth / access ----------
+
+enum Role {
+  ADMIN // Finance team — full access, manages integrations
+  DEPARTMENT_HEAD // Sees their department's data + company-wide read-only
+  EXECUTIVE // Full read-only access across all dashboards
+  VIEWER // Restricted read-only, single department
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  role          Role      @default(VIEWER)
+  department    String? // e.g. "Sales", "Delivery", "Finance", "Ops" — null = all-department access
+  ssoProvider   String? // "google" | "microsoft"
+  lastLoginAt   DateTime?
+  createdAt     DateTime  @default(now())
+  savedViews    SavedView[]
+}
+
+model SavedView {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  name      String
+  dashboard String // "revenue" | "utilization" | "financials"
+  filters   String // JSON-encoded filter state
+  createdAt DateTime @default(now())
+}
+
+// ---------- CRM / Sales (Salesforce) ----------
+
+model Client {
+  id                String   @id @default(cuid())
+  salesforceId      String?  @unique
+  quickbooksId      String?  @unique
+  name              String
+  industry          String?
+  segment           String? // "Individual" | "Small Business" | "Enterprise"
+  region            String? // client HQ region, for reporting
+  ownerRep          String? // Salesforce owner / account exec
+  status            String  @default("active") // active | churned | prospect
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  units             Unit[]
+  invoices          Invoice[]
+  opportunities     Opportunity[]
+  timeEntries       TimeEntry[]
+}
+
+model Opportunity {
+  id             String    @id @default(cuid())
+  salesforceId   String    @unique
+  clientId       String
+  client         Client    @relation(fields: [clientId], references: [id])
+  name           String
+  stage          String // Prospecting, Proposal, Negotiation, Closed Won, Closed Lost
+  amount         Float // annualized deal value
+  units          Float? // # Prialto Units in the deal
+  tier           String? // Fractional | Full-Time | Enterprise
+  closeDate      DateTime?
+  isWon          Boolean   @default(false)
+  isClosed       Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+// ---------- Billing unit economics ----------
+
+model Unit {
+  id            String    @id @default(cuid())
+  clientId      String
+  client        Client    @relation(fields: [clientId], references: [id])
+  tier          String // Fractional | Full-Time | Enterprise
+  monthlyRate   Float // USD/month for this unit
+  hoursIncluded Float     @default(55)
+  deliveryRegion String?  // GT | PH | KE | Other — delivery center code where the assigned assistant sits
+  startDate     DateTime
+  endDate       DateTime?
+  status        String    @default("active") // active | paused | cancelled
+  createdAt     DateTime  @default(now())
+}
+
+// ---------- Financials (QuickBooks) ----------
+
+model Invoice {
+  id            String   @id @default(cuid())
+  quickbooksId  String   @unique
+  clientId      String?
+  client        Client?  @relation(fields: [clientId], references: [id])
+  issueDate     DateTime
+  dueDate       DateTime
+  amount        Float
+  balance       Float // outstanding balance (0 = fully paid) — drives AR aging
+  status        String // open | paid | overdue | void
+  currency      String   @default("USD")
+  createdAt     DateTime @default(now())
+}
+
+model FinancialStatementLine {
+  id           String   @id @default(cuid())
+  statement    String // "P&L" | "BalanceSheet" | "CashFlow"
+  account      String // e.g. "Revenue:Service Income", "Expenses:Payroll:GT"
+  category     String // top-level rollup: Revenue | COGS | Opex | Assets | Liabilities | Equity | Operating | Investing | Financing
+  periodStart  DateTime
+  periodEnd    DateTime
+  amount       Float
+  currency     String   @default("USD")
+  source       String   @default("quickbooks")
+  createdAt    DateTime @default(now())
+
+  @@index([statement, periodStart, periodEnd])
+}
+
+// ---------- Utilization / delivery (Time Doctor) ----------
+
+model TimeEntry {
+  id             String   @id @default(cuid())
+  timedoctorId   String   @unique
+  assistantEmail String
+  clientId       String?
+  client         Client?  @relation(fields: [clientId], references: [id])
+  date           DateTime
+  hoursTracked   Float
+  hoursBillable  Float
+  deliveryRegion String?
+  createdAt      DateTime @default(now())
+
+  @@index([date])
+}
+
+model UtilizationSnapshot {
+  id              String   @id @default(cuid())
+  periodStart     DateTime
+  periodEnd       DateTime
+  clientId        String?
+  deliveryRegion  String?
+  hoursIncluded   Float // hours sold/billed for the period
+  hoursDelivered  Float // hours actually worked per Time Doctor
+  utilizationPct  Float // hoursDelivered / hoursIncluded
+  createdAt       DateTime @default(now())
+
+  @@index([periodStart, periodEnd])
+}
+
+// ---------- Rollups (written by the nightly sync job) ----------
+// A generic metrics-mart table so dashboard trend lines don't have to compute
+// heavy aggregations on every page load. `dimensions` holds a JSON-encoded
+// breakdown key (e.g. {"tier":"Enterprise"} or {"region":"PH"}) so one table
+// covers company-wide and segmented trends alike — region values are the
+// GT/PH/KE delivery-center codes.
+
+model MonthlyMetric {
+  id         String   @id @default(cuid())
+  metric     String // "mrr" | "arr" | "active_units" | "utilization_pct" | "revenue" | ...
+  month      DateTime // first day of month
+  dimensions String   @default("{}")
+  value      Float
+  createdAt  DateTime @default(now())
+
+  @@index([metric, month])
+}
+
+// ---------- Integration credentials ----------
+// Stores the OAuth tokens obtained after an admin completes the consent flow
+// for each system (see docs/CREDENTIALS.md). Access tokens are short-lived;
+// refresh tokens are used by lib/integrations/*.ts to mint new access tokens
+// automatically. In production, encrypt `accessToken`/`refreshToken` at rest
+// (e.g. via a KMS-backed field-level encryption library) rather than storing
+// plaintext.
+
+model IntegrationCredential {
+  id           String   @id @default(cuid())
+  source       String   @unique // salesforce | quickbooks | timedoctor
+  accessToken  String
+  refreshToken String?
+  instanceUrl  String? // Salesforce instance URL / QBO realmId, as applicable
+  expiresAt    DateTime?
+  updatedAt    DateTime @updatedAt
+}
+
+// ---------- Integration health ----------
+
+model SyncRun {
+  id          String   @id @default(cuid())
+  source      String // salesforce | quickbooks | timedoctor
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+  status      String   @default("running") // running | success | failed
+  recordsSynced Int    @default(0)
+  errorMessage String?
+}

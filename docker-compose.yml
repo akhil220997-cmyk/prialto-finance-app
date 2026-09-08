@@ -1,0 +1,29 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: prialto
+      POSTGRES_PASSWORD: prialto
+      POSTGRES_DB: prialto_finance
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - '5432:5432'
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://prialto:prialto@db:5432/prialto_finance
+    ports:
+      - '3000:3000'
+
+volumes:
+  db_data:

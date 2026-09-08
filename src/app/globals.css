@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Design tokens — Prialto brand theme: black + orange, the app's sole theme
+   (no light mode). Categorical series palette is the dataviz skill's
+   validated reference palette, re-ordered so orange (Prialto's brand hue)
+   leads the sequence — re-validated via scripts/validate_palette.js against
+   both candidate dark surfaces (#1a1a19 and #141414) before shipping:
+   passes lightness band, chroma floor, CVD separation (target/floor), the
+   normal-vision floor, and contrast vs. surface. Re-run the validator after
+   any change to these eight hex values. */
+:root {
+  color-scheme: dark;
+  --surface-1: #17140f;
+  --surface-2: #1f1b15;
+  --page-plane: #0a0908;
+  --text-primary: #ffffff;
+  --text-secondary: #cdc8bd;
+  --text-muted: #918b7f;
+  --gridline: #2c2822;
+  --baseline: #3b362d;
+  --border: rgba(255, 255, 255, 0.1);
+
+  /* Prialto brand accent — vivid orange, used for UI chrome (active nav,
+     links, focus rings, primary buttons) — kept distinct in tone from the
+     status-serious step below so the two are never confusable at a glance. */
+  --brand: #f97316;
+  --brand-strong: #ffa64d;
+
+  /* Categorical series — fixed hue order, never cycled. Orange leads. */
+  --series-1: #d95926;
+  --series-2: #3987e5;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  /* Status — reserved, never reused for a series; always paired with an
+     icon + label, never color alone. Brightened for legibility on black. */
+  --status-good: #34d399;
+  --status-warning: #f5b400;
+  --status-warning-text: #ffcf4d;
+  --status-serious: #fb923c;
+  --status-critical: #f87171;
+}
+
+body {
+  background: var(--page-plane);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Shared micro-interaction for every card-like surface (StatTiles,
+   SectionCards, raw chart/table cards) — a consistent hover lift + shadow +
+   border brighten, and a soft fade-in used when a chart's data changes
+   underneath it (e.g. picking a new date range). Centralized here so the
+   whole app moves the same way rather than each component inventing its
+   own hover treatment. */
+.hover-card {
+  transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease, background-color 200ms ease;
+}
+
+.hover-card:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 4px 24px -8px rgba(0, 0, 0, 0.5);
+  transform: translateY(-2px);
+}
+
+@keyframes section-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-section-fade {
+  animation: section-fade-in 0.3s ease-out;
+}
